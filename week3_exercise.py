@@ -103,9 +103,9 @@ def main():
                         elif event.value == (-1, 0): # Left
                             print('left')
                 if event.type == pygame.JOYAXISMOTION:
-                    if event.axis == 4: # Up/Down - Left Stick
+                    if event.axis == 4: # Left trigger
                         vel_pub.publish(roslibpy.Message(left))
-                    if event.axis == 5: # Left/Right - Left Stick
+                    if event.axis == 5: # Right trigger
                         vel_pub.publish(roslibpy.Message(right))
     except KeyboardInterrupt:
         # Turn off LED
