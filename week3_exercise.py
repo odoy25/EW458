@@ -33,22 +33,46 @@ straight = {
     'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}
 }
 
-# Use threading.Event for thread-safe blinking control
+stop = {
+    'linear': {'x': 0.0, 'y': 0.0, 'z': 0.0},
+    'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}
+}
+
 blinking_event = th.Event()
+velocity_lock = th.Lock()
+current_velocity = stop
+running = True  # for velocity publishing thread
 
 def blink_leds(color):
-    while blinking_event.is_set():  # Check if the event is set
+    while blinking_event.is_set(): 
         led_msg = {'leds': colors[color], 'override_system': True}
-        led_pub.publish(roslibpy.Message(led_msg))
+        if ros_node.is_connected:
+            led_pub.publish(roslibpy.Message(led_msg))
         time.sleep(1)
         led_msg = {'leds': colors[color], 'override_system': False}
-        led_pub.publish(roslibpy.Message(led_msg))
+        if ros_node.is_connected:
+            led_pub.publish(roslibpy.Message(led_msg))
         time.sleep(1)
 
+def velocity_publisher():
+    global current_velocity # used chatGPT for this
+    while running:
+        with velocity_lock:
+            if ros_node.is_connected:
+                vel_pub.publish(roslibpy.Message(current_velocity))
+        time.sleep(0.1)
+
+vel_thread = th.Thread(target=velocity_publisher, daemon=True)
+vel_thread.start()
+
 def main():
-    global blinking_event
+    global blinking_event, current_velocity #chatGPT
     pygame.init()
     pygame.joystick.init()
+
+    if pygame.joystick.get_count() == 0:
+        print("No joystick detected!")
+        return
 
     joy = pygame.joystick.Joystick(0)
     joy.init()
@@ -57,6 +81,9 @@ def main():
     arm_count = 0  # to track arming/disarming
     color = 'yellow'  # default color
     blink_thread = None  # Reference to the blinking thread
+    left_trigger_active = False
+    right_trigger_active = False
+    dead_zone = 0.1  # Dead zone threshold
 
     try:
         while True:
@@ -64,60 +91,79 @@ def main():
                 if event.type == pygame.JOYBUTTONDOWN:
                     if event.button == 0:  # A button
                         color = 'green'
-                        led_msg = {'leds': colors[color], 'override_system': True}
-                        led_pub.publish(roslibpy.Message(led_msg))
                     elif event.button == 1:  # B button
                         color = 'red'
-                        led_msg = {'leds': colors[color], 'override_system': True}
-                        led_pub.publish(roslibpy.Message(led_msg))
                     elif event.button == 2:  # X button
                         color = 'blue'
-                        led_msg = {'leds': colors[color], 'override_system': True}
-                        led_pub.publish(roslibpy.Message(led_msg))
                     elif event.button == 3:  # Y button
                         color = 'yellow'
-                        led_msg = {'leds': colors[color], 'override_system': True}
+
+                    led_msg = {'leds': colors[color], 'override_system': True} #chatGPT made these three lines to cut down on`redundancy`
+                    if ros_node.is_connected:
                         led_pub.publish(roslibpy.Message(led_msg))
-                    elif event.button == 7:  # Menu button
+
+                    if event.button == 7:  # Menu button (Arming/Disarming)
                         arm_count += 1  
                         if arm_count % 2 == 0:  # Disarmed - SOLID
                             print('Disarmed')
-                            blinking_event.clear()  # Stop blinking
+                            blinking_event.clear()
                             if blink_thread and blink_thread.is_alive():
-                                blink_thread.join()  # Ensure thread is stopped
+                                blink_thread.join()  # stop the previous blink thread before starting a new one
                             led_msg = {'leds': colors[color], 'override_system': True}
-                            led_pub.publish(roslibpy.Message(led_msg))
+                            if ros_node.is_connected:
+                                led_pub.publish(roslibpy.Message(led_msg))
                         else:  # Armed - BLINKING
                             print('Armed')
-                            blinking_event.set()  # Start blinking
+                            blinking_event.set()
+                            if blink_thread and blink_thread.is_alive():
+                                blink_thread.join()  # stop any existing blinking thread is stopped
                             blink_thread = th.Thread(target=blink_leds, args=(color,), daemon=True)
                             blink_thread.start()
+
                 if event.type == pygame.JOYHATMOTION:
                     if event.hat == 0:
-                        if event.value == (0, 1): # Up
-                            print('up') # Go in circle
-                        elif event.value == (0, -1): # Down
-                            print('down')# Stop circle
-                        elif event.value == (1, 0): # Right
+                        if event.value == (0, 1):  # Up
+                            print('Going manual...')
+                        elif event.value == (0, -1):  # Down
+                            print('Going automatic...')
+                        elif event.value == (1, 0):  # Right
                             print('right')
-                        elif event.value == (-1, 0): # Left
+                        elif event.value == (-1, 0):  # Left
                             print('left')
-                if event.type == pygame.JOYAXISMOTION:
-                    if event.axis == 4: # Left trigger
-                        vel_pub.publish(roslibpy.Message(left))
-                    if event.axis == 5: # Right trigger
-                        vel_pub.publish(roslibpy.Message(right))
-    except KeyboardInterrupt:
-        # Turn off LED
-        blinking_event.clear()  # Ensure blinking thread stops
-        if blink_thread and blink_thread.is_alive():
-            blink_thread.join()
-        led_msg = {'leds': colors[color], 'override_system': False}
-        led_pub.publish(roslibpy.Message(led_msg))
-        led_pub.unadvertise()
-        ros_node.terminate()
 
-        print('Exiting.')
+                if event.type == pygame.JOYAXISMOTION:
+                    if event.axis == 4:  # Left trigger
+                        left_trigger_active = event.value > -0.9 # dead zone
+                    elif event.axis == 5:  # Right trigger
+                        right_trigger_active = event.value > -0.9
+
+                # update velocity with lock 
+                with velocity_lock:
+                    if left_trigger_active and right_trigger_active:
+                        current_velocity = straight
+                    elif left_trigger_active:
+                        current_velocity = left
+                    elif right_trigger_active:
+                        current_velocity = right
+                    else:
+                        current_velocity = stop
+
+    except KeyboardInterrupt:
+        print("Shutting down...")
+
+        # stop velocity 
+        global running
+        running = False
+        vel_thread.join()
+
+        # stop the robot 
+        with velocity_lock:
+            current_velocity = stop
+            if ros_node.is_connected:
+                vel_pub.publish(roslibpy.Message(stop))
+
+        # stop everything
+        ros_node.terminate()
         pygame.quit()
         return
 
