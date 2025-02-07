@@ -1,9 +1,8 @@
-import pygame   # use for reference: https://www.pygame.org/docs/ref/joystick.html 
-import time
+import pygame  # use for reference: https://www.pygame.org/docs/ref/joystick.html 
 import roslibpy
 from idleMode import idleMode
 from manualMode import manualMode
-from autoMode import autoMode
+from autoMode import autoMode 
 
 class robotController:
     def __init__(self):
@@ -12,10 +11,20 @@ class robotController:
         self.ros_node.run()
         self.robot_name = 'bravo'
 
-        # import modes from classes
+        # initialize modes from classes
         self.idle = idleMode(self.ros_node, self.robot_name)
         self.auto = autoMode(self.ros_node, self.robot_name)
         self.manual = manualMode(self.ros_node, self.robot_name)
+
+        # set initial mode to idle
+        self.current_mode = self.idle
+
+    def switch_mode(self, mode):
+        # allow for ease when switching between modes (cleanup and activate are within each class, used chatGPT for help in development because we had trouble switching between modes intially)
+        if self.current_mode != mode:
+            self.current_mode.cleanup()
+            self.current_mode = mode
+            self.current_mode.activate()
 
     def run(self):
         pygame.init()
@@ -35,30 +44,19 @@ class robotController:
                 for event in pygame.event.get():
                     if event.type == pygame.JOYBUTTONDOWN:
                         if event.button == 0:  # A button - MANUAL
-                            self.manual.publish_green()
-                            self.manual.make_manual_noise()
-                            self.manual.steer()
-                        elif event.button == 1:  # B button - NOTHING
-                            pass
+                            self.switch_mode(self.manual)
                         elif event.button == 2:  # X button - IDLE
-                            self.idle.publish_blue()
-                            self.idle.make_idle_noise()  
+                            self.switch_mode(self.idle)
                         elif event.button == 3:  # Y button - AUTO
-                            self.auto.publish_flashing_yellow()
-                            self.auto.make_auto_noise()
-                            self.auto.mow()
-                        
-
+                            self.switch_mode(self.auto)
         except KeyboardInterrupt:
             print("Shutting down...")
         finally:
             self.ros_node.terminate()
             pygame.quit()
 
-
 if __name__ == '__main__':
     controller = robotController()
     controller.run()
 
-        
 
