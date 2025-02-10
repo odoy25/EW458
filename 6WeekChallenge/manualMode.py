@@ -1,112 +1,90 @@
-import pygame 
+import pygame
 import time
 import threading as th
 import roslibpy
 
-class manualMode():
+class manualMode:
     def __init__(self, ros_node, robot_name):
         self.ros_node = ros_node
         self.robot_name = robot_name
 
-        # Create ROS topics for publishing LED and audio commands
+        # create topics for publishing
         self.led_pub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/cmd_lightring', 'irobot_create_msgs/LightringLeds')
         self.noise_pub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/cmd_audio', 'irobot_create_msgs/AudioNoteVector')
-        self.vel_pub = roslibpy.Topic(ros_node, f'/{robot_name}/cmd_vel', 'geometry_msgs/Twist')
+        self.vel_pub = roslibpy.Topic(self.ros_node, f'/{robot_name}/cmd_vel', 'geometry_msgs/Twist')
 
-        # Advertise topics
-        self.led_pub.advertise()
-        self.noise_pub.advertise()
+        # initialize pygame for joystick input
+        self.joystick = None
+        self.velocity_lock = th.Lock()
+        self.running = False
+        self.vel_thread = None
+
+    def activate(self):
+        # initialize joystick
+        pygame.init()
+        self.joystick = pygame.joystick.Joystick(0)
+        self.joystick.init()
+
+        # start the velocity publishing thread
+        self.running = True
+        self.vel_thread = th.Thread(target=self.velocity_publisher, daemon=True)
+        self.vel_thread.start()
+
+        # perform manual-specific actions
+        self.publish_green()
+        self.make_manual_noise()
+
+    def cleanup(self):
+        # prepare to exit mode
+        self.running = False 
+        if self.vel_thread is not None:
+            self.vel_thread.join() # stop the velocity thread
+        pygame.quit()
+        print("Exiting manual mode.")
+
+    def velocity_publisher(self):
+        while self.running:
+            self.update_velocity()
+            if self.ros_node.is_connected:
+                self.vel_pub.publish(roslibpy.Message(self.current_velocity))
+            time.sleep(0.05)  # publish every 50ms
 
     def publish_green(self):
-        """Publish a green LED signal to the robot."""
+        # publish distinct manual color (green)
         color = {'green': [{'red': 0, 'green': 255, 'blue': 0}] * 6}
         if self.ros_node.is_connected:
             led_msg = {'leds': color['green'], 'override_system': True}
             self.led_pub.publish(roslibpy.Message(led_msg))
-        else:
-            print("ROS node not connected. Cannot publish LED message.")
 
     def make_manual_noise(self):
-        """Publish a two-chimed idle noise signal to the robot."""
+        # publish distinct manual noise
         if self.ros_node.is_connected:
             noise_msg = {
                 'notes': [
-                    {'frequency': 320, 'max_runtime': {'sec': 0, 'nanosec': 200000000}},  # First chime
-                    {'frequency': 570, 'max_runtime': {'sec': 0, 'nanosec': 200000000}},  # Second chime
+                    {'frequency': 320, 'max_runtime': {'sec': 0, 'nanosec': 200000000}},
+                    {'frequency': 570, 'max_runtime': {'sec': 0, 'nanosec': 200000000}},
                 ]
             }
             self.noise_pub.publish(roslibpy.Message(noise_msg))
-        else:
-            print("ROS node not connected. Cannot publish noise message.")
 
-    def steer(self):
-        # Define movement commands
-        directions = {
-            "left": {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.6}},
-            "right": {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': -0.6}},
-            "straight": {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}},
-            "stop": {'linear': {'x': 0.0, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}},
+    def update_velocity(self):
+        # read joystick for manual movement
+        self.axis_values = {
+            4: self.joystick.get_axis(4),  # Left trigger
+            5: self.joystick.get_axis(5)   # Right trigger
         }
 
-        self.velocity_lock = th.Lock()
-        self.current_velocity = directions["stop"]
-        self.running = True  # Thread control flag
+        # apply deadzone and update velocity
+        DEADZONE = 0.1
+        left_trigger_active = self.axis_values[4] > DEADZONE
+        right_trigger_active = self.axis_values[5] > DEADZONE
 
-        def velocity_publisher():
-            while self.running:
-                with self.velocity_lock:
-                    if self.ros_node.is_connected:
-                        self.vel_pub.publish(roslibpy.Message(self.current_velocity))
-                time.sleep(0.1)
-
-        # Start publishing thread
-        self.vel_thread = th.Thread(target=velocity_publisher, daemon=True)
-        self.vel_thread.start()
-
-        # Initialize pygame for joystick input
-        pygame.init()
-        if pygame.joystick.get_count() == 0:
-            print("No joystick detected.")
-            return
-
-        joystick = pygame.joystick.Joystick(0)
-        joystick.init()
-
-        # Track axis states
-        axis_values = {4: -1.0, 5: -1.0}  # Default trigger positions (-1.0 means unpressed)
-
-        # Event loop for joystick control
-        try:
-            while self.running:
-                for event in pygame.event.get():
-                    if event.type == pygame.JOYAXISMOTION:
-                        if event.axis in axis_values:
-                            axis_values[event.axis] = event.value
-
-                        left_trigger_active = axis_values[4] > -0.9
-                        right_trigger_active = axis_values[5] > -0.9
-
-                        # Update velocity safely
-                        with self.velocity_lock:
-                            if left_trigger_active and right_trigger_active:
-                                self.current_velocity = directions["straight"]
-                            elif left_trigger_active:
-                                self.current_velocity = directions["left"]
-                            elif right_trigger_active:
-                                self.current_velocity = directions["right"]
-                            else:
-                                self.current_velocity = directions["stop"]
-
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.running = False
-            pygame.quit()
-  
-
-    def close(self):
-        """Unadvertise and uninitialize topics before shutting down."""
-        if self.led_pub.is_advertised:
-            self.led_pub.unadvertise()
-        if self.noise_pub.is_advertised:
-            self.noise_pub.unadvertise()
+        with self.velocity_lock:
+            if left_trigger_active and right_trigger_active:
+                self.current_velocity = {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}}
+            elif left_trigger_active:
+                self.current_velocity = {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.6}}
+            elif right_trigger_active:
+                self.current_velocity = {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': -0.6}}
+            else:
+                self.current_velocity = {'linear': {'x': 0.0, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}}
