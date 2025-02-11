@@ -2,7 +2,6 @@ import pygame
 import time
 import threading as th
 import roslibpy
-import math
 from idleMode import idleMode
 
 class autoMode():
@@ -21,11 +20,6 @@ class autoMode():
         # subscribe to sensor for obstacle detection
         self.obstacle_sub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/sensor_data', 'sensor_msgs/LaserScan')  
 
-        # initialize for velocity control
-        self.velocity_lock = th.Lock()
-        self.running = False
-        self.vel_thread = None
-
         # robot state
         self.x_position = 0.0  # initial x position of the robot
         self.object_detected = False  # flag to track if an obstacle is detected
@@ -33,6 +27,7 @@ class autoMode():
         # LED blinking event
         self.blinking_event = th.Event()
         self.blink_thread = None
+        self.velocity_thread = None
 
     def activate(self):
         # initialize joystick
@@ -47,12 +42,11 @@ class autoMode():
 
     def cleanup(self):
         # prepare to exit mode
-        self.running = False
-        if self.vel_thread is not None:
-            self.vel_thread.join()  # stop the velocity thread
         self.blinking_event.clear()  
         if self.blink_thread and self.blink_thread.is_alive():
             self.blink_thread.join() # stop the blinking on the LED
+        if self.velocity_thread and self.velocity_thread.is_alive():
+            self.velocity_thread.join() # stop the velocity thread
         pygame.quit()
         print("Exiting auto mode.")
 
@@ -87,22 +81,13 @@ class autoMode():
             }
             self.noise_pub.publish(roslibpy.Message(noise_msg))
 
-    def drive_straight(self, meters):
-        start_position = self.x_position
-        target_position = start_position + meters
-
-        # set forward velocity
-        self.current_velocity = {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}}
-        if self.ros_node.is_connected:
-            self.vel_pub.publish(roslibpy.Message(self.current_velocity))  # start moving forward
-
-        # move the robot until it reaches the target position
-        while abs(target_position - start_position) < meters and not self.object_detected:
-            # continuously check the robot's position every 100 ms
-            time.sleep(0.1) 
-
-        # stop the robot
-        self.stop()
+    def move_robot(self):
+        # continuously move the robot at a fixed velocity
+        while self.object_detected is False:
+            self.current_velocity = {'linear': {'x': 0.3, 'y': 0.0, 'z': 0.0}, 'angular': {'x': 0.0, 'y': 0.0, 'z': 0.0}}
+            if self.ros_node.is_connected:
+                self.vel_pub.publish(roslibpy.Message(self.current_velocity))  # start moving forward
+            time.sleep(0.1)
 
     def stop(self):
         # stop the robot's movement by setting the velocity to zero
@@ -136,7 +121,7 @@ class autoMode():
         reset_odom = roslibpy.Service(self.ros_node, f'/{self.robot_name}/reset_pose', 'irobot_create_msgs/ResetPose')
         reset_odom.call(roslibpy.ServiceRequest())
 
-        # intialize for turns
+        # initialize for turns
         turn_counter = 1
 
         # subscribe to odometry to track position
@@ -146,8 +131,11 @@ class autoMode():
         self.odom_sub.subscribe(odom_callback)
 
         # start the sense thread for obstacle detection
-        sense_thread = th.Thread(target=self.sense_head_on)
-        sense_thread.start()
+        self.sense_head_on()
+
+        # start the velocity thread to move the robot
+        self.velocity_thread = th.Thread(target=self.move_robot, daemon=True)
+        self.velocity_thread.start()
 
         # want the robot to stop once its distance is 4.572 meters to the right (10 tiles)
         target_distance = 4.572
@@ -170,15 +158,9 @@ class autoMode():
 
             time.sleep(0.1)
 
-        # stop the sense thread when done
-        self.running = False
-        sense_thread.join()
-
-        # when the robot reaches the end, switch to idle mode
-        print("Mowing complete - switching to idle mode.")
+        # stop the sense and velocity threads when done
+        self.stop()
         self.cleanup()
 
         idle = idleMode(self.ros_node, self.robot_name)
         idle.activate()
-
-            
