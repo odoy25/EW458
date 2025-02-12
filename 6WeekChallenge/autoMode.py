@@ -13,7 +13,7 @@ class autoMode():
         self.led_pub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/cmd_lightring', 'irobot_create_msgs/LightringLeds')
         self.noise_pub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/cmd_audio', 'irobot_create_msgs/AudioNoteVector')
         self.vel_pub = roslibpy.Topic(self.ros_node, f'/{self.robot_name}/cmd_vel', 'geometry_msgs/Twist')
-
+        
         self.odom_sub = roslibpy.Topic(self.ros_node, f'{robot_name}/odom', 'nav_msgs/Odometry')
 
         # intialize for velocity control
