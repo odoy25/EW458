@@ -7,9 +7,9 @@ from autoMode import autoMode
 class robotController:
     def __init__(self):
         # establish connection as a ROS node
-        self.ros_node = roslibpy.Ros(host='192.168.8.104', port=9012)
+        self.ros_node = roslibpy.Ros(host='127.0.0.1', port=9012) # roslibpy.Ros(host='192.168.8.104', port=9012)
         self.ros_node.run()
-        self.robot_name = 'bravo'
+        self.robot_name = 'juliet'
 
         # initialize modes from classes
         self.idle = idleMode(self.ros_node, self.robot_name)
